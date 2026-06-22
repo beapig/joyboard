@@ -66,9 +66,18 @@ pub struct EventEngine {
     button_roles: HashMap<u32, &'static str>,
     fn_pressed_at: Option<Instant>,
     mouse: MouseEngine,
-    /// 鼠标模式下上次摇杆位置（用于判断是否停止移动）
     mouse_last_l: (f32, f32),
     mouse_last_r: (f32, f32),
+    /// 滚轮累加器，(x, y) 分别对应右摇杆水平和垂直
+    scroll_accum: (f32, f32),
+    /// 滚轮起手标记，(x, y) 分别对应两个轴向
+    scroll_primed: (bool, bool),
+    /// 鼠标精细模式子像素累加器
+    mouse_accum: (f64, f64),
+    /// 鼠标精细模式起手标记
+    mouse_fine_primed: bool,
+    /// L3 释放后精细模式的退出时刻（延迟 500ms）
+    fine_exit_at: Option<Instant>,
 }
 
 impl EventEngine {
@@ -96,7 +105,7 @@ impl EventEngine {
             mode: WorkMode::Keyboard,
             prev_mode: WorkMode::Keyboard,
             layer: LayerManager::new(),
-            se_st: SeStPair::new(tap),
+            se_st: SeStPair::new(tap, config.button_mode.hold_threshold_ms),
             left_grid: grid::JoystickGrid::new(&config.joystick_grid.left),
             right_grid: grid::JoystickGrid::new(&config.joystick_grid.right),
             left_joy: (0.0, 0.0),
@@ -111,6 +120,11 @@ impl EventEngine {
             mouse: MouseEngine::new(config.mouse.sensitivity, config.mouse.fine_control.dpi_scale),
             mouse_last_l: (0.0, 0.0),
             mouse_last_r: (0.0, 0.0),
+            scroll_accum: (0.0, 0.0),
+            scroll_primed: (false, false),
+            mouse_accum: (0.0, 0.0),
+            mouse_fine_primed: false,
+            fine_exit_at: None,
         }
     }
 
@@ -143,8 +157,21 @@ impl EventEngine {
             }
         }
 
+        // 每帧检查 SE/ST 长按 → ShiftDown（必须 hold_threshold 后持续按住）
+        let se_st_actions = self.se_st.tick();
+        self.actions_from_se_st(se_st_actions, &mut actions);
+
         // 鼠标模式：摇杆持续移动（不依赖轴事件的触发频率）
         if self.mode == WorkMode::Mouse {
+            // 检查 L3 释放后的延迟退出定时器
+            if let Some(exit_at) = self.fine_exit_at {
+                if Instant::now() >= exit_at {
+                    self.mouse.set_fine_mode(false);
+                    self.fine_exit_at = None;
+                    self.mouse_accum = (0.0, 0.0);
+                    self.mouse_fine_primed = false;
+                }
+            }
             self.emit_mouse_motion(&mut actions);
         }
 
@@ -247,29 +274,109 @@ impl EventEngine {
     fn emit_mouse_motion(&mut self, actions: &mut Vec<Action>) {
         const MOUSE_DEADZONE: f32 = 0.02;
         const SCROLL_DEADZONE: f32 = 0.08;
-        const SCROLL_SCALE: f32 = 3.0;
-        /// 每帧速度基准（像素/帧）。推满时每帧移此量，~60FPS × 12 = 720px/s
+        /// 正常模式速度基准 12 px/帧 = 720 px/s
         const BASE_SPEED: f64 = 12.0;
+        /// 精细模式最大速度 30 px/s，换算为 30/60 px/帧
+        const FINE_SPEED: f64 = 30.0 / 60.0;
+        /// 逐轴死区：人手推摇杆时另一轴的自然偏差可达 0.15~0.2，
+        /// 低于此值的单轴分量视为非有意斜向，不产生移动
+        /// 0.18 ≈ ±10°（tan(10°) = 0.176）
+        const AXIS_DEADZONE: f64 = 0.18;
 
-        // 左摇杆 → 鼠标指针
+        // 左摇杆 → 鼠标指针（先做逐轴死区）
         let (lx, ly) = (self.left_joy.0 as f64, self.left_joy.1 as f64);
-        let mag = (lx * lx + ly * ly).sqrt();
-        if mag > MOUSE_DEADZONE as f64 {
-            // 方向归一化 × 幅度平方（在手感上更自然）× 基准速度
-            let speed = (mag * mag) * BASE_SPEED;
-            let dx = (lx / mag) * speed;
-            let dy = (ly / mag) * speed;
-            // 保证最小移动 1px（防止截断为 0）
-            let dx = if dx.abs() < 1.0 { dx.signum() } else { dx };
-            let dy = if dy.abs() < 1.0 { dy.signum() } else { dy };
-            actions.push(Action::MouseMove { dx, dy });
+        let fx = if lx.abs() < AXIS_DEADZONE { 0.0 } else { lx };
+        let fy = if ly.abs() < AXIS_DEADZONE { 0.0 } else { ly };
+        let mag = (fx * fx + fy * fy).sqrt();
+
+        if self.mouse.fine_mode() {
+            // === 精细模式 ===
+            if mag > MOUSE_DEADZONE as f64 {
+                let nx = fx / mag;
+                let ny = fy / mag;
+
+                if !self.mouse_fine_primed {
+                    self.mouse_fine_primed = true;
+                    self.mouse_accum.0 += nx * 2.0;
+                    self.mouse_accum.1 += ny * 2.0;
+                }
+
+                let factor = ((mag - MOUSE_DEADZONE as f64) / (1.0 - MOUSE_DEADZONE as f64)).clamp(0.0, 1.0);
+                let speed = factor * FINE_SPEED;
+                self.mouse_accum.0 += nx * speed;
+                self.mouse_accum.1 += ny * speed;
+            } else {
+                self.mouse_fine_primed = false;
+                self.mouse_accum.0 *= 0.8;
+                self.mouse_accum.1 *= 0.8;
+                if self.mouse_accum.0.abs() < 0.01 { self.mouse_accum.0 = 0.0; }
+                if self.mouse_accum.1.abs() < 0.01 { self.mouse_accum.1 = 0.0; }
+            }
+
+            // 按累加矢量的模长触发，每次只在主轴方向发 1px
+            let accum_mag = self.mouse_accum.0.hypot(self.mouse_accum.1);
+            if accum_mag >= 1.0 {
+                if self.mouse_accum.0.abs() >= self.mouse_accum.1.abs() {
+                    let step = self.mouse_accum.0.signum() as i32;
+                    actions.push(Action::MouseMove { dx: step as f64, dy: 0.0 });
+                    self.mouse_accum.0 -= step as f64;
+                } else {
+                    let step = self.mouse_accum.1.signum() as i32;
+                    actions.push(Action::MouseMove { dx: 0.0, dy: step as f64 });
+                    self.mouse_accum.1 -= step as f64;
+                }
+            }
+        } else {
+            // === 正常模式 ===
+            if mag > MOUSE_DEADZONE as f64 {
+                let speed = (mag * mag) * BASE_SPEED;
+                let dx = (fx / mag) * speed;
+                let dy = (fy / mag) * speed;
+                actions.push(Action::MouseMove { dx, dy });
+            }
+            // 退出精细模式时重置累加器
+            self.mouse_accum = (0.0, 0.0);
+            self.mouse_fine_primed = false;
         }
 
-        // 右摇杆 Y → 滚轮
-        let scroll = -(self.right_joy.1 * SCROLL_SCALE) as i32;
-        if scroll.abs() as f32 > SCROLL_DEADZONE * SCROLL_SCALE {
-            actions.push(Action::MouseWheel(scroll));
+        // 右摇杆 → 滚轮：X=水平滚动，Y=垂直滚动
+        let scroll_x = EventEngine::process_scroll_axis(self.right_joy.0, &mut self.scroll_accum.0, &mut self.scroll_primed.0);
+        let scroll_y = EventEngine::process_scroll_axis(-self.right_joy.1, &mut self.scroll_accum.1, &mut self.scroll_primed.1);
+        if scroll_x != 0 || scroll_y != 0 {
+            actions.push(Action::MouseWheel { x: scroll_x, y: scroll_y });
         }
+    }
+
+    /// 处理单个轴向的滚轮累加
+    /// 将摇杆幅度从 [deadzone, 1.0] 线性映射到 [min_rate, max_rate]
+    /// 起手先滚一格（出死区即刻触发一次），然后进入累加模式
+    fn process_scroll_axis(stick: f32, accum: &mut f32, primed: &mut bool) -> i32 {
+        const SCROLL_DEADZONE: f32 = 0.08;
+        const SCROLL_RATE_MIN: f32 = 1.0 / 60.0;   // ~0.0167/帧 (1 tick/sec)
+        const SCROLL_RATE_MAX: f32 = 5.0 / 60.0;   // ~0.0833/帧 (5 ticks/sec)
+
+        if stick.abs() > SCROLL_DEADZONE {
+            if !*primed {
+                *primed = true;
+                let sign = if stick > 0.0 { 1 } else { -1 };
+                return sign;  // 起手先送一格
+            }
+            let factor = (stick.abs() - SCROLL_DEADZONE) / (1.0 - SCROLL_DEADZONE);
+            let rate = SCROLL_RATE_MIN + factor * (SCROLL_RATE_MAX - SCROLL_RATE_MIN);
+            *accum += stick.signum() * rate;
+        } else {
+            *primed = false;
+            *accum *= 0.5;
+            if accum.abs() < 0.01 {
+                *accum = 0.0;
+            }
+        }
+        if accum.abs() >= 1.0 {
+            let scroll = accum.trunc() as i32;
+            *accum -= scroll as f32;
+            return scroll;
+        }
+        0
     }
 
     /// FN 键松开：根据按压时长决定 tap/hold
@@ -361,7 +468,11 @@ impl EventEngine {
             BTN_X => { actions.push(Action::KeyDown(273)); } // BTN_RIGHT
             BTN_Y => { actions.push(Action::KeyDown(272)); } // BTN_LEFT
             BTN_R3 => { actions.push(Action::KeyDown(274)); } // BTN_MIDDLE
-            BTN_L3 => { self.mouse.set_fine_mode(true); }
+            BTN_L3 => {
+                // 按下 L3：取消延迟退出定时器，立即进入精细模式
+                self.fine_exit_at = None;
+                self.mouse.set_fine_mode(true);
+            }
             _ => {
                 if let Some(key) = self.direct_key_map(code, true) {
                     actions.push(key);
@@ -375,7 +486,10 @@ impl EventEngine {
             BTN_X => { actions.push(Action::KeyUp(273)); }
             BTN_Y => { actions.push(Action::KeyUp(272)); }
             BTN_R3 => { actions.push(Action::KeyUp(274)); }
-            BTN_L3 => { self.mouse.set_fine_mode(false); }
+            BTN_L3 => {
+                // 松开 L3：500ms 后才退出精细模式，让手有缓冲时间松摇杆
+                self.fine_exit_at = Some(Instant::now() + std::time::Duration::from_millis(500));
+            }
             _ => {
                 if let Some(key) = self.direct_key_map(code, false) {
                     actions.push(key);

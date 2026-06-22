@@ -232,8 +232,8 @@ fn run_debug(path: &str) -> io::Result<()> {
                 output::Action::MouseMove { dx, dy } => {
                     eprintln!("{stage}  MOUSE  dx={dx:+.1} dy={dy:+.1}");
                 }
-                output::Action::MouseWheel(d) => {
-                    eprintln!("{stage}  WHEEL  {d:+}");
+                output::Action::MouseWheel { x, y } => {
+                    eprintln!("{stage}  WHEEL  x={x:+} y={y:+}");
                 }
             }
         }

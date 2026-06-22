@@ -47,6 +47,20 @@ impl SeStSM {
         self.pressed_at
             .map(|t| t.elapsed().as_millis() as u64)
     }
+
+    /// 检查是否已超过 hold 阈值，若是则转移到 ShiftDown
+    pub fn try_hold(&mut self, hold_threshold_ms: u64) -> Option<SeStAction> {
+        if self.state == SeStState::Waiting {
+            if let Some(elapsed) = self.elapsed_since_press() {
+                if elapsed >= hold_threshold_ms {
+                    self.state = SeStState::ShiftDown;
+                    self.pressed_at = None;
+                    return Some(SeStAction::ShiftDown(self.own_shift));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// SE/ST 对
@@ -55,6 +69,7 @@ pub struct SeStPair {
     pub se: SeStSM,
     pub st: SeStSM,
     tap_threshold_ms: u64,
+    hold_threshold_ms: u64,
     /// 第三方按键标志：检测 SE/ST 是否需要提前触发 Shift
     third_party_shifted_se: bool,
     third_party_shifted_st: bool,
@@ -70,7 +85,7 @@ pub enum SeStAction {
 }
 
 impl SeStPair {
-    pub fn new(tap_threshold_ms: u64) -> Self {
+    pub fn new(tap_threshold_ms: u64, hold_threshold_ms: u64) -> Self {
         let tab = keycode_from_name("tab").unwrap_or(15);
         let space = keycode_from_name("space").unwrap_or(57);
         let lshift = keycode_from_name("lshift").unwrap_or(42);
@@ -79,6 +94,7 @@ impl SeStPair {
             se: SeStSM::new(tab, lshift),
             st: SeStSM::new(space, rshift),
             tap_threshold_ms,
+            hold_threshold_ms,
             third_party_shifted_se: false,
             third_party_shifted_st: false,
         }
@@ -214,6 +230,18 @@ impl SeStPair {
         if self.st.state == SeStState::Waiting {
             actions.push(SeStAction::ShiftDown(self.st.own_shift));
             self.third_party_shifted_st = true;
+        }
+        actions
+    }
+
+    /// 每帧调用：检查 SE/ST 是否已超过 hold 阈值
+    pub fn tick(&mut self) -> Vec<SeStAction> {
+        let mut actions = Vec::new();
+        if let Some(action) = self.se.try_hold(self.hold_threshold_ms) {
+            actions.push(action);
+        }
+        if let Some(action) = self.st.try_hold(self.hold_threshold_ms) {
+            actions.push(action);
         }
         actions
     }

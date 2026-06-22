@@ -4,7 +4,7 @@ pub enum Action {
     KeyDown(u16),
     KeyUp(u16),
     MouseMove { dx: f64, dy: f64 },
-    MouseWheel(i32),
+    MouseWheel { x: i32, y: i32 },
 }
 
 /// 输出层抽象

@@ -76,6 +76,8 @@ impl UInputBackend {
             .event(Event::Relative(Relative::Position(RelPos::Y)))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             .event(Event::Relative(Relative::Wheel(RelWheel::Vertical)))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .event(Event::Relative(Relative::Wheel(RelWheel::Horizontal)))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         let device = builder
@@ -101,10 +103,17 @@ impl OutputBackend for UInputBackend {
                         .send(Event::Relative(Relative::Position(RelPos::Y)), *dy as i32)
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                 }
-                Action::MouseWheel(delta) => {
-                    self.device
-                        .send(Event::Relative(Relative::Wheel(RelWheel::Vertical)), *delta)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                Action::MouseWheel { x, y } => {
+                    if *y != 0 {
+                        self.device
+                            .send(Event::Relative(Relative::Wheel(RelWheel::Vertical)), *y)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    }
+                    if *x != 0 {
+                        self.device
+                            .send(Event::Relative(Relative::Wheel(RelWheel::Horizontal)), *x)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    }
                 }
             }
         }
