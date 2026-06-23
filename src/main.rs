@@ -7,6 +7,9 @@ mod mouse;
 mod output;
 mod tui;
 
+#[cfg(feature = "web")]
+mod web;
+
 use crate::input::InputBackend;
 use crate::output::OutputBackend;
 
@@ -18,6 +21,8 @@ fn print_help(program: &str) {
     eprintln!("  {program} evtest <设备路径>        调试: 打印逻辑摇杆/按键事件");
     eprintln!("  {program} keytest <设备路径>       调试: 打印引擎输出的键盘事件");
     eprintln!("  {program} debug <设备路径>         调试: 多阶段管线 + 状态面板");
+    #[cfg(feature = "web")]
+    eprintln!("  {program} serve [端口号] [evdev路径]   启动 Web 配置面板（可选实时输入）");
     eprintln!("  {program} --help                   显示帮助");
 }
 
@@ -40,6 +45,14 @@ fn main() -> io::Result<()> {
 
     if args.len() >= 3 && args[1] == "debug" {
         return run_debug(&args[2]);
+    }
+
+    #[cfg(feature = "web")]
+    if args.len() >= 2 && args[1] == "serve" {
+        let port = args.get(2).and_then(|s| s.parse::<u16>().ok()).unwrap_or(3000);
+        let evdev_path = args.get(3).cloned();
+        let config = config::Config::load();
+        return run_serve(port, config, evdev_path);
     }
 
     run_normal()
@@ -254,6 +267,14 @@ fn run_debug(path: &str) -> io::Result<()> {
         }
         last_frame = Instant::now();
     }
+}
+
+#[cfg(feature = "web")]
+fn run_serve(port: u16, config: crate::config::Config, evdev_path: Option<String>) -> io::Result<()> {
+    eprintln!("[WEB] 启动配置面板...");
+    let rt = tokio::runtime::Runtime::new().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    rt.block_on(crate::web::serve(port, config, evdev_path));
+    Ok(())
 }
 
 fn evdev_name(code: u32) -> &'static str {

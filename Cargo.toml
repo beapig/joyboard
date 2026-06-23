@@ -21,7 +21,7 @@ ratatui = { version = "0.26", optional = true }
 crossterm = { version = "0.27", optional = true }
 
 # 可选 feature: Web 配置工具
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", features = ["ws"], optional = true }
 tower-http = { version = "0.5", features = ["fs"], optional = true }
 
 # 可选 feature: GTK 浮窗

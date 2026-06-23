@@ -78,6 +78,8 @@ pub struct EventEngine {
     mouse_fine_primed: bool,
     /// L3 释放后精细模式的退出时刻（延迟 500ms）
     fine_exit_at: Option<Instant>,
+    /// L1 按下标记：L1 激活精细模式时不响应 L3 的延迟退出定时器
+    fine_l1_active: bool,
 }
 
 impl EventEngine {
@@ -125,6 +127,7 @@ impl EventEngine {
             mouse_accum: (0.0, 0.0),
             mouse_fine_primed: false,
             fine_exit_at: None,
+            fine_l1_active: false,
         }
     }
 
@@ -163,13 +166,15 @@ impl EventEngine {
 
         // 鼠标模式：摇杆持续移动（不依赖轴事件的触发频率）
         if self.mode == WorkMode::Mouse {
-            // 检查 L3 释放后的延迟退出定时器
-            if let Some(exit_at) = self.fine_exit_at {
-                if Instant::now() >= exit_at {
-                    self.mouse.set_fine_mode(false);
-                    self.fine_exit_at = None;
-                    self.mouse_accum = (0.0, 0.0);
-                    self.mouse_fine_primed = false;
+            // 检查 L3 释放后的延迟退出定时器（L1 保持时跳过）
+            if !self.fine_l1_active {
+                if let Some(exit_at) = self.fine_exit_at {
+                    if Instant::now() >= exit_at {
+                        self.mouse.set_fine_mode(false);
+                        self.fine_exit_at = None;
+                        self.mouse_accum = (0.0, 0.0);
+                        self.mouse_fine_primed = false;
+                    }
                 }
             }
             self.emit_mouse_motion(&mut actions);
@@ -194,6 +199,45 @@ impl EventEngine {
             BTN_L1 => {
                 self.on_l1_down();
             }
+            BTN_L3 => {
+                if self.mode == WorkMode::Keyboard {
+                    let cell = self.left_grid.selected_cell(self.left_joy);
+                    self.left_cell_locked = cell;
+                    if let Some(cell_idx) = cell {
+                        let layout = match self.layer.current() {
+                            Layer::Base => &BASE_LAYOUT,
+                            Layer::Fn => &FN_LAYOUT,
+                        };
+                        if let Some(key_name) = get_key_name(layout, cell_idx) {
+                            if let Some((key_code, _mods)) = parse_key_name(key_name) {
+                                actions.push(Action::KeyDown(key_code));
+                            }
+                        }
+                    }
+                } else if self.mode == WorkMode::Mouse {
+                    self.fine_exit_at = None;
+                    self.mouse.set_fine_mode(true);
+                }
+            }
+            BTN_R3 => {
+                if self.mode == WorkMode::Keyboard {
+                    let cell = self.right_grid.selected_cell(self.right_joy);
+                    self.right_cell_locked = cell;
+                    if let Some(cell_idx) = cell {
+                        let layout = match self.layer.current() {
+                            Layer::Base => &BASE_LAYOUT,
+                            Layer::Fn => &FN_LAYOUT,
+                        };
+                        if let Some(key_name) = get_key_name(layout, 14 - cell_idx) {
+                            if let Some((key_code, _mods)) = parse_key_name(key_name) {
+                                actions.push(Action::KeyDown(key_code));
+                            }
+                        }
+                    }
+                } else if self.mode == WorkMode::Mouse {
+                    actions.push(Action::KeyDown(274)); // BTN_MIDDLE
+                }
+            }
             BTN_SE => {
                 let se_actions = self.se_st.on_se_down(Instant::now());
                 self.actions_from_se_st(se_actions, actions);
@@ -202,9 +246,21 @@ impl EventEngine {
                 let st_actions = self.se_st.on_st_down(Instant::now());
                 self.actions_from_se_st(st_actions, actions);
             }
-            // D-pad 方向键：任何模式下都直接透传
+            // D-pad 方向键
             103 | 105 | 106 | 108 => {
-                self.emit_dpad(code, true, actions);
+                if self.mode == WorkMode::Mouse && self.layer.current() == Layer::Fn {
+                    // 鼠标模式 FN 层：映射为 PageUp/Down/Home/End
+                    let fn_key = match code {
+                        103 => 104, // Up → PageUp
+                        108 => 109, // Down → PageDown
+                        105 => 102, // Left → Home
+                        106 => 107, // Right → End
+                        _ => code,
+                    };
+                    actions.push(Action::KeyDown(fn_key as u16));
+                } else {
+                    self.emit_dpad(code, true, actions);
+                }
             }
             _ => {
                 // 手柄模式：所有按键透传
@@ -231,6 +287,42 @@ impl EventEngine {
                 actions.push(Action::KeyUp(code as u16));
             }
             BTN_L1 => self.on_l1_up(),
+            BTN_L3 => {
+                if self.mode == WorkMode::Keyboard {
+                    if let Some(cell_idx) = self.left_cell_locked {
+                        let layout = match self.layer.current() {
+                            Layer::Base => &BASE_LAYOUT,
+                            Layer::Fn => &FN_LAYOUT,
+                        };
+                        if let Some(key_name) = get_key_name(layout, cell_idx) {
+                            if let Some((key_code, _mods)) = parse_key_name(key_name) {
+                                actions.push(Action::KeyUp(key_code));
+                            }
+                        }
+                    }
+                    self.left_cell_locked = None;
+                } else if self.mode == WorkMode::Mouse {
+                    self.fine_exit_at = Some(Instant::now() + std::time::Duration::from_millis(500));
+                }
+            }
+            BTN_R3 => {
+                if self.mode == WorkMode::Keyboard {
+                    if let Some(cell_idx) = self.right_cell_locked {
+                        let layout = match self.layer.current() {
+                            Layer::Base => &BASE_LAYOUT,
+                            Layer::Fn => &FN_LAYOUT,
+                        };
+                        if let Some(key_name) = get_key_name(layout, 14 - cell_idx) {
+                            if let Some((key_code, _mods)) = parse_key_name(key_name) {
+                                actions.push(Action::KeyUp(key_code));
+                            }
+                        }
+                    }
+                    self.right_cell_locked = None;
+                } else if self.mode == WorkMode::Mouse {
+                    actions.push(Action::KeyUp(274));
+                }
+            }
             BTN_FN => {
                 self.on_function_up(actions);
             }
@@ -242,9 +334,20 @@ impl EventEngine {
                 let st_actions = self.se_st.on_st_up();
                 self.actions_from_se_st(st_actions, actions);
             }
-            // D-pad 方向键：任何模式下都直接透传
+            // D-pad 方向键
             103 | 105 | 106 | 108 => {
-                self.emit_dpad(code, false, actions);
+                if self.mode == WorkMode::Mouse && self.layer.current() == Layer::Fn {
+                    let fn_key = match code {
+                        103 => 104,
+                        108 => 109,
+                        105 => 102,
+                        106 => 107,
+                        _ => code,
+                    };
+                    actions.push(Action::KeyUp(fn_key as u16));
+                } else {
+                    self.emit_dpad(code, false, actions);
+                }
             }
             _ => {
                 if self.mode == WorkMode::Gamepad {
@@ -276,8 +379,8 @@ impl EventEngine {
         const SCROLL_DEADZONE: f32 = 0.08;
         /// 正常模式速度基准 12 px/帧 = 720 px/s
         const BASE_SPEED: f64 = 12.0;
-        /// 精细模式最大速度 30 px/s，换算为 30/60 px/帧
-        const FINE_SPEED: f64 = 30.0 / 60.0;
+        /// 精细模式最大速度 90 px/s，换算为 90/60 px/帧
+        const FINE_SPEED: f64 = 90.0 / 60.0;
         /// 逐轴死区：人手推摇杆时另一轴的自然偏差可达 0.15~0.2，
         /// 低于此值的单轴分量视为非有意斜向，不产生移动
         /// 0.18 ≈ ±10°（tan(10°) = 0.176）
@@ -410,8 +513,25 @@ impl EventEngine {
         }
     }
 
-    fn on_l1_down(&mut self) { self.layer.fn_down(); }
-    fn on_l1_up(&mut self) { self.layer.fn_up(); }
+    fn on_l1_down(&mut self) {
+        self.layer.fn_down();
+        // L1 也触发鼠标精细模式（不论 FN lock 状态）
+        if self.mode == WorkMode::Mouse {
+            self.fine_l1_active = true;
+            self.fine_exit_at = None;
+            self.mouse.set_fine_mode(true);
+        }
+    }
+    fn on_l1_up(&mut self) {
+        self.layer.fn_up();
+        // L1 松开立即退出精细模式（无延迟）
+        if self.mode == WorkMode::Mouse {
+            self.fine_l1_active = false;
+            self.mouse.set_fine_mode(false);
+            self.mouse_accum = (0.0, 0.0);
+            self.mouse_fine_primed = false;
+        }
+    }
 
     fn on_keyboard_button_down(&mut self, code: u32, actions: &mut Vec<Action>) {
         // 先尝试直接按键映射
@@ -467,11 +587,10 @@ impl EventEngine {
         match code {
             BTN_X => { actions.push(Action::KeyDown(273)); } // BTN_RIGHT
             BTN_Y => { actions.push(Action::KeyDown(272)); } // BTN_LEFT
-            BTN_R3 => { actions.push(Action::KeyDown(274)); } // BTN_MIDDLE
-            BTN_L3 => {
-                // 按下 L3：取消延迟退出定时器，立即进入精细模式
-                self.fine_exit_at = None;
-                self.mouse.set_fine_mode(true);
+            BTN_R1 => {
+                // FN 层激活时 R1 → Delete，否则 Backspace
+                let key = if self.layer.current() == Layer::Fn { 111 } else { 14 };
+                actions.push(Action::KeyDown(key));
             }
             _ => {
                 if let Some(key) = self.direct_key_map(code, true) {
@@ -485,10 +604,9 @@ impl EventEngine {
         match code {
             BTN_X => { actions.push(Action::KeyUp(273)); }
             BTN_Y => { actions.push(Action::KeyUp(272)); }
-            BTN_R3 => { actions.push(Action::KeyUp(274)); }
-            BTN_L3 => {
-                // 松开 L3：500ms 后才退出精细模式，让手有缓冲时间松摇杆
-                self.fine_exit_at = Some(Instant::now() + std::time::Duration::from_millis(500));
+            BTN_R1 => {
+                let key = if self.layer.current() == Layer::Fn { 111 } else { 14 };
+                actions.push(Action::KeyUp(key));
             }
             _ => {
                 if let Some(key) = self.direct_key_map(code, false) {
@@ -507,8 +625,12 @@ impl EventEngine {
         }
     }
 
-    fn map_button_to_grid(&self, _code: u32) -> Option<usize> {
-        None
+    fn map_button_to_grid(&self, code: u32) -> Option<usize> {
+        match code {
+            BTN_L3 => self.left_cell_locked,
+            BTN_R3 => self.right_cell_locked,
+            _ => None,
+        }
     }
 
     fn actions_from_se_st(&self, se_actions: Vec<SeStAction>, actions: &mut Vec<Action>) {

@@ -17,10 +17,16 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoystickConfig {
-    pub deadzone: DeadzoneConfig,
-    pub curve: CurveConfig,
+    pub left: StickConfig,
+    pub right: StickConfig,
     /// 硬件摇杆最大绝对值（ANBERNIC = 4096）
     pub range_max: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickConfig {
+    pub deadzone: DeadzoneConfig,
+    pub curve: CurveConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,8 +44,6 @@ pub struct CurveConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MouseConfig {
     pub sensitivity: f32,
-    pub acceleration: bool,
-    pub acceleration_curve: f32,
     pub fine_control: FineControlConfig,
 }
 
@@ -53,7 +57,6 @@ pub struct FineControlConfig {
 pub struct ButtonModeConfig {
     pub tap_threshold_ms: u64,
     pub hold_threshold_ms: u64,
-    pub extend_threshold_ms: u64,
     pub double_tap_interval_ms: u64,
 }
 
@@ -80,20 +83,18 @@ impl Default for Config {
             evdev_path: "/dev/input/event1".into(),
             log_level: "info".into(),
             joystick: JoystickConfig {
-                deadzone: DeadzoneConfig {
-                    center: 0.15,
-                    edge: 0.95,
+                left: StickConfig {
+                    deadzone: DeadzoneConfig { center: 0.15, edge: 0.95 },
+                    curve: CurveConfig { curve_type: "quadratic".into(), power: 2.0 },
                 },
-                curve: CurveConfig {
-                    curve_type: "quadratic".into(),
-                    power: 2.0,
+                right: StickConfig {
+                    deadzone: DeadzoneConfig { center: 0.15, edge: 0.95 },
+                    curve: CurveConfig { curve_type: "quadratic".into(), power: 2.0 },
                 },
                 range_max: 4096.0,
             },
             mouse: MouseConfig {
                 sensitivity: 1.0,
-                acceleration: true,
-                acceleration_curve: 1.5,
                 fine_control: FineControlConfig {
                     enable: true,
                     dpi_scale: 0.25,
@@ -102,7 +103,6 @@ impl Default for Config {
             button_mode: ButtonModeConfig {
                 tap_threshold_ms: 180,
                 hold_threshold_ms: 400,
-                extend_threshold_ms: 1200,
                 double_tap_interval_ms: 300,
             },
             joystick_grid: default_grid_config(),
@@ -148,7 +148,7 @@ impl Config {
     }
 }
 
-fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     dirs_config_dir().join("joyboard").join("config.toml")
 }
 
