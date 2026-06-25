@@ -5,10 +5,14 @@ mod engine;
 mod input;
 mod mouse;
 mod output;
+mod state;
 mod tui;
 
 #[cfg(feature = "web")]
 mod web;
+
+#[cfg(feature = "overlay")]
+mod overlay;
 
 use crate::input::InputBackend;
 use crate::output::OutputBackend;
@@ -17,12 +21,15 @@ fn print_help(program: &str) {
     eprintln!("JoyBoard — Linux 手柄映射键鼠");
     eprintln!();
     eprintln!("用法:");
-    eprintln!("  {program}                         正常启动（读取配置中的设备）");
+    eprintln!("  {program}                         后台 daemon（读取配置中的设备）");
+    eprintln!("  {program} tui                     启动终端 UI（连接 daemon 显示状态）");
     eprintln!("  {program} evtest <设备路径>        调试: 打印逻辑摇杆/按键事件");
     eprintln!("  {program} keytest <设备路径>       调试: 打印引擎输出的键盘事件");
     eprintln!("  {program} debug <设备路径>         调试: 多阶段管线 + 状态面板");
     #[cfg(feature = "web")]
-    eprintln!("  {program} serve [端口号] [evdev路径]   启动 Web 配置面板（可选实时输入）");
+    eprintln!("  {program} serve [端口号] [evdev路径]   启动 Web 配置面板（默认设备从配置读取）");
+    #[cfg(feature = "overlay")]
+    eprintln!("  {program} overlay                  启动 GTK 浮窗 UI（需先运行主程序）");
     eprintln!("  {program} --help                   显示帮助");
 }
 
@@ -47,12 +54,22 @@ fn main() -> io::Result<()> {
         return run_debug(&args[2]);
     }
 
+    if args.len() >= 2 && args[1] == "tui" {
+        return run_tui();
+    }
+
     #[cfg(feature = "web")]
     if args.len() >= 2 && args[1] == "serve" {
         let port = args.get(2).and_then(|s| s.parse::<u16>().ok()).unwrap_or(3000);
-        let evdev_path = args.get(3).cloned();
         let config = config::Config::load();
+        let evdev_path = args.get(3).cloned().or_else(|| Some(config.evdev_path.clone()));
         return run_serve(port, config, evdev_path);
+    }
+
+    #[cfg(feature = "overlay")]
+    if args.len() >= 2 && args[1] == "overlay" {
+        overlay::run_overlay();
+        return Ok(());
     }
 
     run_normal()
@@ -329,7 +346,7 @@ fn key_name(code: u16) -> &'static str {
     names.iter().find(|(c, _)| *c == code).map(|(_, n)| *n).unwrap_or("?")
 }
 
-/// 正常启动模式
+/// 后台 daemon 模式
 fn run_normal() -> io::Result<()> {
     let config = config::Config::load();
 
@@ -358,8 +375,6 @@ fn run_normal() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     let mut output_backend = output::uinput::UInputBackend::new()?;
 
-    let mut tui = tui::Tui::new()?;
-
     log::info!("JoyBoard 已启动");
     log::info!("  设备: {}", config.evdev_path);
     log::info!("  初始模式: {:?}", engine.mode);
@@ -367,7 +382,7 @@ fn run_normal() -> io::Result<()> {
     use std::time::Instant;
 
     let mut last_frame = Instant::now();
-    const FRAME_DT: std::time::Duration = std::time::Duration::from_micros(16_666); // ~60 FPS
+    const FRAME_DT: std::time::Duration = std::time::Duration::from_micros(16_666);
 
     loop {
         let raw_events = match input_backend.poll() {
@@ -393,12 +408,19 @@ fn run_normal() -> io::Result<()> {
             }
         }
 
-        // 固定 60 FPS 帧率控制
-        tui.render(&engine.state());
+        // 写入状态文件（供 tui / overlay 进程读取）
+        state::write(&engine.state());
+
+        // 60 FPS 帧率控制
         let elapsed = last_frame.elapsed();
         if elapsed < FRAME_DT {
             std::thread::sleep(FRAME_DT - elapsed);
         }
         last_frame = Instant::now();
     }
+}
+
+/// 独立终端 UI：读取 daemon 状态文件并渲染
+fn run_tui() -> io::Result<()> {
+    tui::run()
 }

@@ -4,12 +4,14 @@
 /// - 静态文件服务（web/index.html）
 /// - GET /api/config — 读取当前配置
 /// - POST /api/config — 写入配置并重建校准缓存
-/// - WS /ws — 实时摇杆数据（raw + calibrated + grid cell）
+/// - WS /ws — 实时摇杆数据 + 完整管线按键事件
 
 use crate::config::Config;
 use crate::engine::grid::JoystickGrid;
+use crate::engine::EventEngine;
 use crate::input::lut::LutTable;
-use crate::input::{evdev::EvdevBackend, InputBackend, RawGamepadEvent};
+use crate::input::{evdev::EvdevBackend, InputBackend, InputProcessor, RawGamepadEvent};
+use crate::output::Action;
 use axum::{
     Router,
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
@@ -58,11 +60,17 @@ pub async fn serve(port: u16, cfg: Config, evdev_path: Option<String>) {
     });
 
     // 可选：读取 evdev 推送实时摇杆数据
-    if let Some(path) = evdev_path {
-        let state_clone = state.clone();
-        tokio::task::spawn_blocking(move || {
-            run_evdev_loop(&path, evdev_tx, state_clone);
-        });
+    if let Some(ref path) = evdev_path {
+        if path == "none" || path.is_empty() {
+            eprintln!("[WEB] 跳过 evdev 实时输入");
+        } else {
+            eprintln!("[WEB] 正在连接 evdev: {path}");
+            let state_clone = state.clone();
+            let path_owned = path.clone();
+            tokio::task::spawn_blocking(move || {
+                run_evdev_loop(&path_owned, evdev_tx, state_clone);
+            });
+        }
     }
 
     // 自动检测 web 资源目录
@@ -84,6 +92,7 @@ pub async fn serve(port: u16, cfg: Config, evdev_path: Option<String>) {
     let addr = format!("0.0.0.0:{}", port);
     eprintln!("[WEB] 配置面板: http://127.0.0.1:{}", port);
     eprintln!("[WEB] 局域网访问: http://<本机IP>:{}", port);
+    eprintln!("[WEB] evdev 设备: {}", evdev_path.as_deref().unwrap_or("未指定（无实时数据）"));
     eprintln!("[WEB] 按 Ctrl+C 停止服务");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -100,6 +109,13 @@ fn run_evdev_loop(path: &str, tx: broadcast::Sender<String>, state: Arc<WebState
         }
     };
     eprintln!("[WEB] 已连接 evdev: {path}");
+
+    // 创建完整事件管线，用于输出按键事件
+    let cfg = state.config.blocking_read();
+    let pipeline_lut = LutTable::precompute(&cfg);
+    let mut pipeline_proc = InputProcessor::new(pipeline_lut, vec![2, 3, 4, 5]);
+    let mut pipeline_engine = EventEngine::new(&cfg);
+    drop(cfg);
 
     let mut raw_left = (0.0f32, 0.0f32);
     let mut raw_right = (0.0f32, 0.0f32);
@@ -137,6 +153,16 @@ fn run_evdev_loop(path: &str, tx: broadcast::Sender<String>, state: Arc<WebState
                         }
                     }
                 }
+
+                // 完整管线：输入处理 → 引擎映射 → 按键事件
+                let gamepad = pipeline_proc.process(events);
+                let actions = pipeline_engine.feed(gamepad);
+                let actions_json: Vec<serde_json::Value> = actions.iter().map(|a| match a {
+                    Action::KeyDown(code) => serde_json::json!({"t":"kd","c":code,"n":action_key_name(*code)}),
+                    Action::KeyUp(code) => serde_json::json!({"t":"ku","c":code,"n":action_key_name(*code)}),
+                    Action::MouseMove { dx, dy } => serde_json::json!({"t":"mm","dx":dx,"dy":dy}),
+                    Action::MouseWheel { x, y } => serde_json::json!({"t":"mw","x":x,"y":y}),
+                }).collect();
 
                 // 使用缓存校准（零内存分配）
                 if let Ok(cache) = state.cal_cache.read() {
@@ -176,6 +202,7 @@ fn run_evdev_loop(path: &str, tx: broadcast::Sender<String>, state: Arc<WebState
                         "R": { "x": cal_right.0, "y": cal_right.1 },
                         "grid": { "L": left_cell, "R": right_cell },
                         "buttons": btn_map,
+                        "actions": actions_json,
                     });
 
                     let _ = tx.send(payload.to_string());
@@ -186,6 +213,29 @@ fn run_evdev_loop(path: &str, tx: broadcast::Sender<String>, state: Arc<WebState
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
+    }
+}
+
+/// 动作按键码 → 可读名（前端显示用）
+fn action_key_name(code: u16) -> &'static str {
+    match code {
+        1 => "ESC", 2..=11 => ["1","2","3","4","5","6","7","8","9","0"][(code-2) as usize],
+        12 => "-", 13 => "=", 14 => "BS", 15 => "TAB",
+        16..=25 => ["Q","W","E","R","T","Y","U","I","O","P"][(code-16) as usize],
+        26 => "[", 27 => "]", 28 => "ENTER", 29 => "LCTRL",
+        30..=38 => ["A","S","D","F","G","H","J","K","L"][(code-30) as usize],
+        39 => ";", 40 => "'", 41 => "`", 42 => "LSHIFT",
+        43 => "\\", 44..=50 => ["Z","X","C","V","B","N","M"][(code-44) as usize],
+        51 => ",", 52 => ".", 53 => "/", 54 => "RSHIFT",
+        56 => "LALT", 57 => "SPACE", 58 => "CAPS",
+        59..=68 => ["F1","F2","F3","F4","F5","F6","F7","F8","F9","F10"][(code-59) as usize],
+        87 => "F11", 88 => "F12",
+        97 => "RCTRL", 100 => "RALT",
+        103 => "UP", 108 => "DOWN", 105 => "LEFT", 106 => "RIGHT",
+        102 => "HOME", 107 => "END", 104 => "PGUP", 109 => "PGDN",
+        110 => "INS", 111 => "DEL",
+        272 => "LCLICK", 273 => "RCLICK", 274 => "MCLICK",
+        _ => "?",
     }
 }
 

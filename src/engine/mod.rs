@@ -208,7 +208,7 @@ impl EventEngine {
                             Layer::Base => &BASE_LAYOUT,
                             Layer::Fn => &FN_LAYOUT,
                         };
-                        if let Some(key_name) = get_key_name(layout, cell_idx) {
+                        if let Some(key_name) = get_key_name(layout, cell_idx, false) {
                             if let Some((key_code, _mods)) = parse_key_name(key_name) {
                                 actions.push(Action::KeyDown(key_code));
                             }
@@ -228,7 +228,7 @@ impl EventEngine {
                             Layer::Base => &BASE_LAYOUT,
                             Layer::Fn => &FN_LAYOUT,
                         };
-                        if let Some(key_name) = get_key_name(layout, 14 - cell_idx) {
+                        if let Some(key_name) = get_key_name(layout, cell_idx, true) {
                             if let Some((key_code, _mods)) = parse_key_name(key_name) {
                                 actions.push(Action::KeyDown(key_code));
                             }
@@ -248,8 +248,8 @@ impl EventEngine {
             }
             // D-pad 方向键
             103 | 105 | 106 | 108 => {
-                if self.mode == WorkMode::Mouse && self.layer.current() == Layer::Fn {
-                    // 鼠标模式 FN 层：映射为 PageUp/Down/Home/End
+                if self.mode != WorkMode::Gamepad && self.layer.current() == Layer::Fn {
+                    // FN 层：映射为 PageUp/Down/Home/End
                     let fn_key = match code {
                         103 => 104, // Up → PageUp
                         108 => 109, // Down → PageDown
@@ -294,7 +294,7 @@ impl EventEngine {
                             Layer::Base => &BASE_LAYOUT,
                             Layer::Fn => &FN_LAYOUT,
                         };
-                        if let Some(key_name) = get_key_name(layout, cell_idx) {
+                        if let Some(key_name) = get_key_name(layout, cell_idx, false) {
                             if let Some((key_code, _mods)) = parse_key_name(key_name) {
                                 actions.push(Action::KeyUp(key_code));
                             }
@@ -312,7 +312,7 @@ impl EventEngine {
                             Layer::Base => &BASE_LAYOUT,
                             Layer::Fn => &FN_LAYOUT,
                         };
-                        if let Some(key_name) = get_key_name(layout, 14 - cell_idx) {
+                        if let Some(key_name) = get_key_name(layout, cell_idx, true) {
                             if let Some((key_code, _mods)) = parse_key_name(key_name) {
                                 actions.push(Action::KeyUp(key_code));
                             }
@@ -336,7 +336,7 @@ impl EventEngine {
             }
             // D-pad 方向键
             103 | 105 | 106 | 108 => {
-                if self.mode == WorkMode::Mouse && self.layer.current() == Layer::Fn {
+                if self.mode != WorkMode::Gamepad && self.layer.current() == Layer::Fn {
                     let fn_key = match code {
                         103 => 104,
                         108 => 109,
@@ -547,7 +547,7 @@ impl EventEngine {
             Layer::Fn => &FN_LAYOUT,
         };
         if let Some(cell) = self.map_button_to_grid(code) {
-            if let Some(key_name) = get_key_name(layout, cell) {
+            if let Some(key_name) = get_key_name(layout, cell, false) {
                 if let Some((key_code, _mods)) = parse_key_name(key_name) {
                     actions.push(Action::KeyDown(key_code));
                 }
@@ -708,12 +708,10 @@ impl EventEngine {
     }
 }
 
-fn get_key_name<'a>(layout: &'a [[&'a str; 10]; 3], cell: usize) -> Option<&'a str> {
+fn get_key_name<'a>(layout: &'a [[&'a str; 10]; 3], cell: usize, right_grid: bool) -> Option<&'a str> {
     let row = cell / 5;
-    let col = cell % 5;
-    if row < 3 && col < 5 {
-        Some(layout[row][col])
-    } else if row < 3 && col < 10 {
+    let col = (cell % 5) + if right_grid { 5 } else { 0 };
+    if row < 3 && col < 10 {
         Some(layout[row][col])
     } else {
         None

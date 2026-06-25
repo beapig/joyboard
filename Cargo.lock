@@ -988,6 +988,7 @@ dependencies = [
  "crossterm",
  "env_logger",
  "evdev",
+ "glib",
  "gtk",
  "libc",
  "log",

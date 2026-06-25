@@ -218,6 +218,27 @@ body {
 .matrix-cell.cell-selected.cell-r { background: var(--blue); color: #fff; opacity: 1; }
 .matrix-cell.cell-active { background: #fff !important; color: #000 !important; opacity: 1 !important; border-color: #fff !important; }
 
+/* === Event log === */
+.event-log {
+  background: #0a0a1a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  max-height: 140px;
+  overflow-y: auto;
+  min-height: 60px;
+  line-height: 1.6;
+}
+.event-log .evt-kd { color: #4caf50; }
+.event-log .evt-ku { color: #f44336; }
+.event-log .evt-mm { color: #ff9800; }
+.event-log .evt-mw { color: #9c27b0; }
+.event-log .evt-time { color: #607080; margin-right: 6px; }
+.event-log .evt-name { font-weight: 600; }
+.event-log::-webkit-scrollbar { width: 3px; }
+.event-log::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 2px; }
+
 /* === Config form === */
 .config-grid {
   display: grid;
@@ -332,6 +353,10 @@ body {
       <h2>⚙️ 参数配置</h2>
       <div class="config-grid" id="configForm"></div>
     </div>
+    <div class="panel">
+      <h2>⌨️ 按键事件日志</h2>
+      <div class="event-log" id="eventLog"><span style="color:var(--text-dim);">等待按键...</span></div>
+    </div>
   </div>
 
   <!-- Tab: 摇杆校准配置 -->
@@ -434,6 +459,27 @@ let pressedL3 = false, pressedR3 = false;
 let selectedCell = { L: null, R: null };
 let dragState = null;
 let dirty = false;
+// 按键事件日志
+let recentActions = [];
+const MAX_ACTION_LOG = 50;
+
+function appendAction(evt) {
+  const now = new Date();
+  const ts = now.getHours().toString().padStart(2,'0') + ':' +
+             now.getMinutes().toString().padStart(2,'0') + ':' +
+             now.getSeconds().toString().padStart(2,'0') + '.' +
+             now.getMilliseconds().toString().padStart(3,'0');
+  recentActions.push({ ...evt, ts });
+  if (recentActions.length > MAX_ACTION_LOG) recentActions.shift();
+  const el = document.getElementById('eventLog');
+  el.innerHTML = recentActions.map(a => {
+    const cls = a.t === 'kd' ? 'evt-kd' : a.t === 'ku' ? 'evt-ku' : a.t === 'mm' ? 'evt-mm' : a.t === 'mw' ? 'evt-mw' : '';
+    const label = a.t === 'kd' ? 'DOWN' : a.t === 'ku' ? 'UP  ' : a.t === 'mm' ? 'MOVE' : 'WHEL';
+    const detail = a.n || (a.t === 'mm' ? `dx=${a.dx?.toFixed(1)} dy=${a.dy?.toFixed(1)}` : a.t === 'mw' ? `x=${a.x} y=${a.y}` : '');
+    return `<span class="evt-time">${a.ts}</span><span class="${cls}"><span class="evt-name">${label}</span> ${detail}</span>`;
+  }).join('<br>');
+  el.scrollTop = el.scrollHeight;
+}
 
 // ==================== TAB SWITCHING ====================
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -912,6 +958,10 @@ function connectWebSocket() {
         pressedR3 = !!data.buttons["R3"];
         renderMatrix();
       }
+      // Actions from full event pipeline
+      if (data.actions && Array.isArray(data.actions)) {
+        data.actions.forEach(a => appendAction(a));
+      }
     } catch(e) {}
   };
   ws.onopen = () => {
@@ -944,6 +994,13 @@ function startMockData() {
     joystickState.L = { x: calibrate(rawJoystickState.L.x, "L"), y: calibrate(rawJoystickState.L.y, "L") };
     joystickState.R = { x: calibrate(rawJoystickState.R.x, "R"), y: calibrate(rawJoystickState.R.y, "R") };
     pressedL3 = Math.sin(t*0.3) > 0.8; pressedR3 = Math.sin(t*0.3+1) > 0.8;
+    // Mock random key events
+    if (Math.random() < 0.08) {
+      const keys = ["A","B","ENTER","SPACE","ESC","Q","W","E","R"];
+      const k = keys[Math.floor(Math.random() * keys.length)];
+      appendAction({ t: "kd", n: k });
+      setTimeout(() => appendAction({ t: "ku", n: k }), 80 + Math.random() * 150);
+    }
     updateCoordsDisplay();
     updateCalCoordsDisplay();
     drawGrid("canvasL", "L"); drawGrid("canvasR", "R");
