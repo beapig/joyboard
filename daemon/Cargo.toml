@@ -1,0 +1,29 @@
+[package]
+name = "joyboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+joyboard-core = { path = "../core" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+log = "0.4"
+env_logger = "0.11"
+evdev = "0.12"
+
+# 可选 feature: TUI
+ratatui = { version = "0.26", optional = true }
+crossterm = { version = "0.27", optional = true }
+
+# 可选 feature: Web 配置工具
+tokio = { version = "1", features = ["full"], optional = true }
+axum = { version = "0.7", features = ["ws"], optional = true }
+tower-http = { version = "0.5", features = ["fs"], optional = true }
+
+[features]
+default = ["tui"]
+full = ["tui", "web"]
+tui = ["ratatui", "crossterm"]
+web = ["tokio", "axum", "tower-http"]

@@ -429,7 +429,6 @@ const DEFAULT_CONFIG = {
     fine_control: { enable: true, dpi_scale: 0.25 }
   },
   button_mode: {
-    tap_threshold_ms: 180,
     hold_threshold_ms: 400,
     double_tap_interval_ms: 300
   },
@@ -794,8 +793,7 @@ function buildConfigForm() {
       { key: "fine_control.dpi_scale", label: "精细模式缩放", type: "range", min: 0.05, max: 1.0, step: 0.05 },
     ]},
     { title: "🔘 按键", prefix: "button_mode", fields: [
-      { key: "tap_threshold_ms", label: "Tap 阈值 (ms)", type: "number", min: 50, max: 500 },
-      { key: "hold_threshold_ms", label: "Hold 阈值 (ms)", type: "number", min: 100, max: 1000 },
+      { key: "hold_threshold_ms", label: "Tap/Hold 阈值 (ms)", type: "number", min: 100, max: 1000 },
       { key: "double_tap_interval_ms", label: "双击间隔 (ms)", type: "number", min: 100, max: 1000 },
     ]},
   ];
@@ -921,7 +919,7 @@ function updateCalCoordsDisplay() {
 function setDirty(d) { dirty = d; document.getElementById("saveBtn").disabled = !d; document.getElementById("saveStatus").textContent = d ? "⚠️ 未保存" : "✅ 已保存"; }
 document.getElementById("saveBtn").addEventListener("click", () => {
   document.getElementById("saveStatus").textContent = "💾 保存中...";
-  fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) })
+  fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) })
     .then(r => r.json()).then(() => setDirty(false))
     .catch(() => { console.log("Save:", JSON.stringify(config,null,2)); setDirty(false); document.getElementById("saveStatus").textContent = "✅ 已保存（离线）"; });
 });
@@ -944,6 +942,9 @@ function connectWebSocket() {
         joystickState.L.y = data.L?.y ?? joystickState.L.y;
         joystickState.R.x = data.R?.x ?? joystickState.R.x;
         joystickState.R.y = data.R?.y ?? joystickState.R.y;
+        // Update selected cells
+        if (data.left_grid_selected !== undefined) selectedCell.L = data.left_grid_selected;
+        if (data.right_grid_selected !== undefined) selectedCell.R = data.right_grid_selected;
         updateCoordsDisplay();
         updateCalCoordsDisplay();
         drawGrid("canvasL", "L"); drawGrid("canvasR", "R");
@@ -951,6 +952,7 @@ function connectWebSocket() {
         drawCalGrid("canvasRawR", "R", true);
         drawCalGrid("canvasCalL", "L", false);
         drawCalGrid("canvasCalR", "R", false);
+        renderMatrix();
       }
       // Buttons from new format (object with names)
       if (data.buttons && typeof data.buttons === "object") {
@@ -1019,7 +1021,6 @@ function loadConfig() {
   fetch("/api/config")
     .then(r => r.json())
     .then(cfg => {
-      // Deep merge: keep UI-only fields, overwrite backend fields
       function deepMerge(target, src) {
         for (const k of Object.keys(src)) {
           if (src[k] && typeof src[k] === "object" && !Array.isArray(src[k])) {
@@ -1031,7 +1032,9 @@ function loadConfig() {
         }
       }
       deepMerge(config, cfg);
-      // Rebuild UI with fetched config
+    })
+    .catch(() => {})
+    .finally(() => {
       buildConfigForm();
       buildCalibrateForm();
       renderMatrix();
@@ -1043,28 +1046,13 @@ function loadConfig() {
       updateCoordsDisplay();
       updateCalCoordsDisplay();
       setDirty(false);
-    })
-    .catch(() => {
-      // 后端不可用时使用默认配置
     });
 }
 
 function init() {
   loadConfig();
-  buildConfigForm();
-  buildCalibrateForm();
-  renderMatrix();
-  drawGrid("canvasL", "L"); drawGrid("canvasR", "R");
-  drawCalGrid("canvasRawL", "L", true);
-  drawCalGrid("canvasRawR", "R", true);
-  drawCalGrid("canvasCalL", "L", false);
-  drawCalGrid("canvasCalR", "R", false);
-  updateCoordsDisplay();
-  updateCalCoordsDisplay();
-  setDirty(false);
-  // Always try WS first, fallback to mock after 3s
   connectWebSocket();
-  setTimeout(() => { if (document.getElementById("statusText").textContent === "未连接") startMockData(); }, 3000);
+  setTimeout(() => { if (document.getElementById("statusText").textContent === "未连接") { startMockData(); } }, 3000);
 }
 
 document.addEventListener("keydown", e => {

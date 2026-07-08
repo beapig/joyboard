@@ -5,8 +5,8 @@ TARGET="aarch64-unknown-linux-gnu"
 HOST="root@192.168.1.42"
 BINARY="joyboard"
 
-echo "==> 编译 ($TARGET)..."
-cargo build --target "$TARGET" --release --features web
+echo "==> 编译 daemon ($TARGET)..."
+cargo build -p joyboard --target "$TARGET" --release --features web
 
 echo "==> 剥离符号..."
 aarch64-linux-gnu-strip "target/$TARGET/release/$BINARY"
@@ -30,10 +30,10 @@ echo "  ssh root@192.168.1.42 joyboard                              # 后台 dae
 echo "  ssh root@192.168.1.42 joyboard tui                          # 终端 UI（新窗口）"
 echo "  ssh root@192.168.1.42 joyboard serve                        # 配置面板"
 echo ""
-echo "浮窗 UI (overlay) 需要在设备上本地编译:"
+echo "浮窗 UI (独立二进制):"
+echo "  设备上安装 GTK3 开发库后本地编译:"
 echo "  ssh root@192.168.1.42"
-echo "  cd /tmp && mkdir -p joyboard-overlay && cd joyboard-overlay"
-echo "  # 复制本机源码到设备, 或使用:"
 echo "  sudo apt install libgtk-3-dev"
-echo "  # 编译: cargo build --release --features overlay"
-echo "  # 运行: ./target/release/joyboard overlay"
+echo "  cd joyboard && cargo build --release -p joyboard-overlay"
+echo "  运行: ./target/release/joyboard-overlay"
+echo "  注: overlay 是独立二进制，与 daemon 互不干扰"

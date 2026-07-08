@@ -46,6 +46,8 @@ pub struct EngineState {
     pub right_grid_selected: Option<usize>,
     pub left_joystick: (f32, f32),
     pub right_joystick: (f32, f32),
+    pub shift_pressed: bool,
+    pub capslock_activated: bool,
 }
 
 /// 事件引擎
@@ -60,7 +62,6 @@ pub struct EventEngine {
     right_joy: (f32, f32),
     left_cell_locked: Option<usize>,
     right_cell_locked: Option<usize>,
-    tap_threshold_ms: u64,
     hold_threshold_ms: u64,
     double_tap_interval_ms: u64,
     button_roles: HashMap<u32, &'static str>,
@@ -80,11 +81,16 @@ pub struct EventEngine {
     fine_exit_at: Option<Instant>,
     /// L1 按下标记：L1 激活精细模式时不响应 L3 的延迟退出定时器
     fine_l1_active: bool,
+    /// L1 上次松开时刻（用于双击检测）
+    l1_released_at: Option<Instant>,
+    /// 记录按下的物理按键及其对应的键码和层状态，用于正确发送 KeyUp
+    pressed_keys: std::collections::HashMap<u32, (Layer, u16)>,
+    /// CapsLock 激活状态
+    capslock_activated: bool,
 }
 
 impl EventEngine {
     pub fn new(config: &Config) -> Self {
-        let tap = config.button_mode.tap_threshold_ms;
         let mut button_roles = HashMap::new();
         button_roles.insert(BTN_A, "A→Enter");
         button_roles.insert(BTN_B, "B→Esc");
@@ -107,14 +113,13 @@ impl EventEngine {
             mode: WorkMode::Keyboard,
             prev_mode: WorkMode::Keyboard,
             layer: LayerManager::new(),
-            se_st: SeStPair::new(tap, config.button_mode.hold_threshold_ms),
+            se_st: SeStPair::new(config.button_mode.hold_threshold_ms),
             left_grid: grid::JoystickGrid::new(&config.joystick_grid.left),
             right_grid: grid::JoystickGrid::new(&config.joystick_grid.right),
             left_joy: (0.0, 0.0),
             right_joy: (0.0, 0.0),
             left_cell_locked: None,
             right_cell_locked: None,
-            tap_threshold_ms: tap,
             hold_threshold_ms: config.button_mode.hold_threshold_ms,
             double_tap_interval_ms: config.button_mode.double_tap_interval_ms,
             button_roles,
@@ -128,10 +133,17 @@ impl EventEngine {
             mouse_fine_primed: false,
             fine_exit_at: None,
             fine_l1_active: false,
+            l1_released_at: None,
+            pressed_keys: std::collections::HashMap::new(),
+            capslock_activated: false, // 完全使用虚拟状态
         }
     }
 
     pub fn state(&self) -> EngineState {
+        use crate::engine::se_st::SeStState;
+        // SE/ST 任一处于 ShiftDown 状态即为 shift 按下
+        let shift_pressed = self.se_st.se.state() == SeStState::ShiftDown
+            || self.se_st.st.state() == SeStState::ShiftDown;
         EngineState {
             mode: self.mode,
             layer: self.layer.current(),
@@ -139,6 +151,8 @@ impl EventEngine {
             right_grid_selected: self.right_cell_locked.or_else(|| self.right_grid.selected_cell(self.right_joy)),
             left_joystick: self.left_joy,
             right_joystick: self.right_joy,
+            shift_pressed,
+            capslock_activated: self.capslock_activated,
         }
     }
 
@@ -514,6 +528,15 @@ impl EventEngine {
     }
 
     fn on_l1_down(&mut self) {
+        // 双击检测
+        if let Some(released_at) = self.l1_released_at {
+            if released_at.elapsed().as_millis() as u64 <= self.double_tap_interval_ms {
+                self.layer.fn_double_tap();
+                self.l1_released_at = None;
+                return;
+            }
+        }
+        self.l1_released_at = None;
         self.layer.fn_down();
         // L1 也触发鼠标精细模式（不论 FN lock 状态）
         if self.mode == WorkMode::Mouse {
@@ -524,6 +547,8 @@ impl EventEngine {
     }
     fn on_l1_up(&mut self) {
         self.layer.fn_up();
+        // 记录松开时刻用于双击检测
+        self.l1_released_at = Some(Instant::now());
         // L1 松开立即退出精细模式（无延迟）
         if self.mode == WorkMode::Mouse {
             self.fine_l1_active = false;
@@ -535,7 +560,7 @@ impl EventEngine {
 
     fn on_keyboard_button_down(&mut self, code: u32, actions: &mut Vec<Action>) {
         // 先尝试直接按键映射
-        if let Some(key) = self.direct_key_map(code, true) {
+        if let Some(key) = self.direct_key_map_with_record(code, true) {
             actions.push(key);
             return;
         }
@@ -556,7 +581,7 @@ impl EventEngine {
     }
 
     fn on_keyboard_button_up(&mut self, code: u32, actions: &mut Vec<Action>) {
-        if let Some(key) = self.direct_key_map(code, false) {
+        if let Some(key) = self.direct_key_map_with_record(code, false) {
             actions.push(key);
             return;
         }
@@ -568,7 +593,13 @@ impl EventEngine {
             BTN_A => 28,   // Enter
             BTN_B => 1,    // Esc
             BTN_X => 111,  // Delete
-            BTN_Y => 110,  // Insert
+            BTN_Y => {
+                if self.layer.current() == Layer::Fn {
+                    58  // CapsLock
+                } else {
+                    110  // Insert
+                }
+            },
             BTN_L1 => return None, // FN 键，已单独处理
             BTN_L2 => 29,  // Ctrl
             BTN_R1 => 14,  // Backspace
@@ -583,6 +614,46 @@ impl EventEngine {
         Some(if is_down { Action::KeyDown(key) } else { Action::KeyUp(key) })
     }
 
+    fn direct_key_map_with_record(&mut self, code: u32, is_down: bool) -> Option<Action> {
+        let key = match code {
+            BTN_A => 28,   // Enter
+            BTN_B => 1,    // Esc
+            BTN_X => 111,  // Delete
+            BTN_Y => {
+                if self.layer.current() == Layer::Fn {
+                    58  // CapsLock
+                } else {
+                    110  // Insert
+                }
+            },
+            BTN_L1 => return None, // FN 键，已单独处理
+            BTN_L2 => 29,  // Ctrl
+            BTN_R1 => 14,  // Backspace
+            BTN_R2 => 56,  // Alt
+            BTN_L3 => return None, // 网格触发键
+            BTN_R3 => return None,
+            BTN_SE => return None, // SE/ST 状态机处理
+            BTN_ST => return None,
+            BTN_FN => 312, // Menu 键透传（keytest 可见）
+            _ => return None,
+        };
+        if is_down {
+            // Y + FN 按下时切换 capslock 状态
+            // 注意：uinput 发送的按键事件不会触发系统 LED，所以需要自己维护状态
+            if code == BTN_Y && self.layer.current() == Layer::Fn {
+                self.capslock_activated = !self.capslock_activated;
+            }
+            self.pressed_keys.insert(code, (self.layer.current(), key));
+            Some(Action::KeyDown(key))
+        } else {
+            if let Some((_, recorded_key)) = self.pressed_keys.remove(&code) {
+                Some(Action::KeyUp(recorded_key))
+            } else {
+                Some(Action::KeyUp(key))
+            }
+        }
+    }
+
     fn on_mouse_button_down(&mut self, code: u32, actions: &mut Vec<Action>) {
         match code {
             BTN_X => { actions.push(Action::KeyDown(273)); } // BTN_RIGHT
@@ -593,7 +664,7 @@ impl EventEngine {
                 actions.push(Action::KeyDown(key));
             }
             _ => {
-                if let Some(key) = self.direct_key_map(code, true) {
+                if let Some(key) = self.direct_key_map_with_record(code, true) {
                     actions.push(key);
                 }
             }
@@ -609,7 +680,7 @@ impl EventEngine {
                 actions.push(Action::KeyUp(key));
             }
             _ => {
-                if let Some(key) = self.direct_key_map(code, false) {
+                if let Some(key) = self.direct_key_map_with_record(code, false) {
                     actions.push(key);
                 }
             }
@@ -633,13 +704,17 @@ impl EventEngine {
         }
     }
 
-    fn actions_from_se_st(&self, se_actions: Vec<SeStAction>, actions: &mut Vec<Action>) {
+    fn actions_from_se_st(&mut self, se_actions: Vec<SeStAction>, actions: &mut Vec<Action>) {
         for action in se_actions {
             match action {
                 SeStAction::KeyDown(code) => actions.push(Action::KeyDown(code)),
                 SeStAction::KeyUp(code) => actions.push(Action::KeyUp(code)),
-                SeStAction::ShiftDown(code) => actions.push(Action::KeyDown(code)),
-                SeStAction::ShiftUp(code) => actions.push(Action::KeyUp(code)),
+                SeStAction::ShiftDown(code) => {
+                    actions.push(Action::KeyDown(code));
+                },
+                SeStAction::ShiftUp(code) => {
+                    actions.push(Action::KeyUp(code));
+                },
             }
         }
     }

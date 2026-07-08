@@ -3,10 +3,10 @@
 /// 用法：`joyboard tui`
 /// 依赖：后台 daemon 已运行（写入 `/tmp/joyboard-state.json`）
 
-use crate::config::keymap::{BASE_LAYOUT, FN_LAYOUT};
-use crate::engine::layer::Layer;
-use crate::engine::WorkMode;
-use crate::state;
+use joyboard_core::config::keymap::{BASE_LAYOUT, FN_LAYOUT};
+use joyboard_core::engine::layer::Layer;
+use joyboard_core::engine::WorkMode;
+use joyboard_core::state;
 use ratatui::{
     Frame,
     backend::CrosstermBackend,
@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use std::io::{self};
+use std::io;
 use std::time::{Duration, Instant};
 
 pub fn run() -> io::Result<()> {

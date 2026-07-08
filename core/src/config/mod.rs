@@ -55,7 +55,6 @@ pub struct FineControlConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ButtonModeConfig {
-    pub tap_threshold_ms: u64,
     pub hold_threshold_ms: u64,
     pub double_tap_interval_ms: u64,
 }
@@ -101,7 +100,6 @@ impl Default for Config {
                 },
             },
             button_mode: ButtonModeConfig {
-                tap_threshold_ms: 180,
                 hold_threshold_ms: 400,
                 double_tap_interval_ms: 300,
             },
@@ -148,7 +146,7 @@ impl Config {
     }
 }
 
-pub(crate) fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     dirs_config_dir().join("joyboard").join("config.toml")
 }
 

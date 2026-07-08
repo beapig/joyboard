@@ -17,6 +17,8 @@ pub struct StatePayload {
     pub right_grid_selected: Option<usize>,
     pub left_joystick: [f32; 2],
     pub right_joystick: [f32; 2],
+    pub shift: bool,
+    pub capslock: bool,
 }
 
 /// 主进程写入状态文件（无 feature 依赖，始终可调用）
@@ -35,6 +37,8 @@ pub fn write(state: &EngineState) {
         right_grid_selected: state.right_grid_selected,
         left_joystick: [state.left_joystick.0, state.left_joystick.1],
         right_joystick: [state.right_joystick.0, state.right_joystick.1],
+        shift: state.shift_pressed,
+        capslock: state.capslock_activated,
     };
 
     if let Ok(json) = serde_json::to_string(&payload) {

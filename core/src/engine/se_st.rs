@@ -68,7 +68,6 @@ impl SeStSM {
 pub struct SeStPair {
     pub se: SeStSM,
     pub st: SeStSM,
-    tap_threshold_ms: u64,
     hold_threshold_ms: u64,
     /// 第三方按键标志：检测 SE/ST 是否需要提前触发 Shift
     third_party_shifted_se: bool,
@@ -85,7 +84,7 @@ pub enum SeStAction {
 }
 
 impl SeStPair {
-    pub fn new(tap_threshold_ms: u64, hold_threshold_ms: u64) -> Self {
+    pub fn new(hold_threshold_ms: u64) -> Self {
         let tab = keycode_from_name("tab").unwrap_or(15);
         let space = keycode_from_name("space").unwrap_or(57);
         let lshift = keycode_from_name("lshift").unwrap_or(42);
@@ -93,7 +92,6 @@ impl SeStPair {
         Self {
             se: SeStSM::new(tab, lshift),
             st: SeStSM::new(space, rshift),
-            tap_threshold_ms,
             hold_threshold_ms,
             third_party_shifted_se: false,
             third_party_shifted_st: false,
@@ -169,13 +167,11 @@ impl SeStPair {
         let mut actions = Vec::new();
         match self.se.state {
             SeStState::Waiting => {
-                // tap: key down + key up
                 let elapsed = self.se.elapsed_since_press().unwrap_or(0);
-                if elapsed < self.tap_threshold_ms {
+                if elapsed < self.hold_threshold_ms {
                     actions.push(SeStAction::KeyDown(self.se.own_key));
                     actions.push(SeStAction::KeyUp(self.se.own_key));
                 } else if !self.third_party_shifted_se {
-                    // 超时但未被其他打断 → 触发 Shift
                     actions.push(SeStAction::ShiftDown(self.se.own_shift));
                     actions.push(SeStAction::ShiftUp(self.se.own_shift));
                 }
@@ -198,7 +194,7 @@ impl SeStPair {
         match self.st.state {
             SeStState::Waiting => {
                 let elapsed = self.st.elapsed_since_press().unwrap_or(0);
-                if elapsed < self.tap_threshold_ms {
+                if elapsed < self.hold_threshold_ms {
                     actions.push(SeStAction::KeyDown(self.st.own_key));
                     actions.push(SeStAction::KeyUp(self.st.own_key));
                 } else if !self.third_party_shifted_st {

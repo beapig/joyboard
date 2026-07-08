@@ -1,21 +1,17 @@
 use std::io;
 
-mod config;
-mod engine;
-mod input;
-mod mouse;
-mod output;
-mod state;
 mod tui;
 
 #[cfg(feature = "web")]
 mod web;
 
-#[cfg(feature = "overlay")]
-mod overlay;
-
-use crate::input::InputBackend;
-use crate::output::OutputBackend;
+use joyboard_core::config;
+use joyboard_core::engine;
+use joyboard_core::input;
+use joyboard_core::input::InputBackend;
+use joyboard_core::output;
+use joyboard_core::output::OutputBackend;
+use joyboard_core::state;
 
 fn print_help(program: &str) {
     eprintln!("JoyBoard — Linux 手柄映射键鼠");
@@ -27,9 +23,7 @@ fn print_help(program: &str) {
     eprintln!("  {program} keytest <设备路径>       调试: 打印引擎输出的键盘事件");
     eprintln!("  {program} debug <设备路径>         调试: 多阶段管线 + 状态面板");
     #[cfg(feature = "web")]
-    eprintln!("  {program} serve [端口号] [evdev路径]   启动 Web 配置面板（默认设备从配置读取）");
-    #[cfg(feature = "overlay")]
-    eprintln!("  {program} overlay                  启动 GTK 浮窗 UI（需先运行主程序）");
+    eprintln!("  {program} config [端口号] [evdev路径]   启动 Web 配置面板（默认设备从配置读取）");
     eprintln!("  {program} --help                   显示帮助");
 }
 
@@ -59,17 +53,11 @@ fn main() -> io::Result<()> {
     }
 
     #[cfg(feature = "web")]
-    if args.len() >= 2 && args[1] == "serve" {
+    if args.len() >= 2 && args[1] == "config" {
         let port = args.get(2).and_then(|s| s.parse::<u16>().ok()).unwrap_or(3000);
-        let config = config::Config::load();
-        let evdev_path = args.get(3).cloned().or_else(|| Some(config.evdev_path.clone()));
-        return run_serve(port, config, evdev_path);
-    }
-
-    #[cfg(feature = "overlay")]
-    if args.len() >= 2 && args[1] == "overlay" {
-        overlay::run_overlay();
-        return Ok(());
+        let cfg = config::Config::load();
+        let evdev_path = args.get(3).cloned().unwrap_or_else(|| cfg.evdev_path.clone());
+        return run_serve(port, cfg, Some(evdev_path));
     }
 
     run_normal()
@@ -96,8 +84,8 @@ fn action_name(code: u16) -> &'static str {
 
 /// 调试模式：只输出输入层处理后的逻辑事件（不含引擎映射）
 fn run_evtest(path: &str) -> io::Result<()> {
-    let config = config::Config::load();
-    let lut = input::lut::LutTable::precompute(&config);
+    let cfg = config::Config::load();
+    let lut = input::lut::LutTable::precompute(&cfg);
     let mut backend = input::evdev::EvdevBackend::new(path)?;
     let mut proc = input::InputProcessor::new(lut, vec![2, 3, 4, 5]);
 
@@ -140,11 +128,11 @@ fn run_evtest(path: &str) -> io::Result<()> {
 
 /// 调试模式：经过完整管线后打印引擎输出的键盘事件
 fn run_keytest(path: &str) -> io::Result<()> {
-    let config = config::Config::load();
-    let lut = input::lut::LutTable::precompute(&config);
+    let cfg = config::Config::load();
+    let lut = input::lut::LutTable::precompute(&cfg);
     let mut backend = input::evdev::EvdevBackend::new(path)?;
     let mut proc = input::InputProcessor::new(lut, vec![2, 3, 4, 5]);
-    let mut engine = engine::EventEngine::new(&config);
+    let mut engine = engine::EventEngine::new(&cfg);
 
     eprintln!("监听设备: {path}");
     eprintln!("按下 Ctrl+C 退出");
@@ -184,11 +172,11 @@ fn run_keytest(path: &str) -> io::Result<()> {
 
 /// 调试模式：完整管线 + 状态面板（不输出到 uinput）
 fn run_debug(path: &str) -> io::Result<()> {
-    let config = config::Config::load();
-    let lut = input::lut::LutTable::precompute(&config);
+    let cfg = config::Config::load();
+    let lut = input::lut::LutTable::precompute(&cfg);
     let mut backend = input::evdev::EvdevBackend::new(path)?;
     let mut proc = input::InputProcessor::new(lut, vec![2, 3, 4, 5]);
-    let mut engine = engine::EventEngine::new(&config);
+    let mut engine = engine::EventEngine::new(&cfg);
 
     eprintln!("监听设备: {path}");
     eprintln!("按下 Ctrl+C 退出");
@@ -268,9 +256,7 @@ fn run_debug(path: &str) -> io::Result<()> {
             }
         }
 
-        if is_empty && !has_mm {
-            // 无事件且无鼠标移动时只显示状态面板
-        } else {
+        if !is_empty || has_mm {
             if !is_empty {
                 eprintln!("[OUTPUT] [dry-run] uinput 未写入 (共 {} 个事件)", actions.len());
             }
@@ -287,10 +273,10 @@ fn run_debug(path: &str) -> io::Result<()> {
 }
 
 #[cfg(feature = "web")]
-fn run_serve(port: u16, config: crate::config::Config, evdev_path: Option<String>) -> io::Result<()> {
+fn run_serve(port: u16, cfg: config::Config, evdev_path: Option<String>) -> io::Result<()> {
     eprintln!("[WEB] 启动配置面板...");
     let rt = tokio::runtime::Runtime::new().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    rt.block_on(crate::web::serve(port, config, evdev_path));
+    rt.block_on(crate::web::serve(port, cfg, evdev_path));
     Ok(())
 }
 
@@ -348,9 +334,9 @@ fn key_name(code: u16) -> &'static str {
 
 /// 后台 daemon 模式
 fn run_normal() -> io::Result<()> {
-    let config = config::Config::load();
+    let cfg = config::Config::load();
 
-    match config.log_level.as_str() {
+    match cfg.log_level.as_str() {
         "trace" => std::env::set_var("RUST_LOG", "trace"),
         "debug" => std::env::set_var("RUST_LOG", "debug"),
         "warn" => std::env::set_var("RUST_LOG", "warn"),
@@ -361,22 +347,22 @@ fn run_normal() -> io::Result<()> {
         .target(env_logger::Target::Stderr)
         .init();
 
-    let lut = input::lut::LutTable::precompute(&config);
+    let lut = input::lut::LutTable::precompute(&cfg);
     let mut proc = input::InputProcessor::new(lut, vec![2, 3, 4, 5]);
 
-    let mut input_backend = input::evdev::EvdevBackend::new(&config.evdev_path)
+    let mut input_backend = input::evdev::EvdevBackend::new(&cfg.evdev_path)
         .map_err(|e| {
-            log::error!("无法打开设备 {}: {}", config.evdev_path, e);
+            log::error!("无法打开设备 {}: {}", cfg.evdev_path, e);
             e
         })?;
 
-    let mut engine = engine::EventEngine::new(&config);
+    let mut engine = engine::EventEngine::new(&cfg);
 
     #[cfg(target_os = "linux")]
     let mut output_backend = output::uinput::UInputBackend::new()?;
 
     log::info!("JoyBoard 已启动");
-    log::info!("  设备: {}", config.evdev_path);
+    log::info!("  设备: {}", cfg.evdev_path);
     log::info!("  初始模式: {:?}", engine.mode);
 
     use std::time::Instant;
@@ -408,7 +394,7 @@ fn run_normal() -> io::Result<()> {
             }
         }
 
-        // 写入状态文件（供 tui / overlay 进程读取）
+        // 写入状态文件（供 tui 等进程读取）
         state::write(&engine.state());
 
         // 60 FPS 帧率控制

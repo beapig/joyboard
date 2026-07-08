@@ -41,7 +41,7 @@ impl LutTable {
     }
 }
 
-fn apply_deadzone(value: f32, config: &StickConfig) -> f32 {
+pub fn apply_deadzone(value: f32, config: &StickConfig) -> f32 {
     let abs = value.abs();
     let center = config.deadzone.center;
     let edge = config.deadzone.edge;
@@ -56,7 +56,7 @@ fn apply_deadzone(value: f32, config: &StickConfig) -> f32 {
     }
 }
 
-fn apply_curve(value: f32, config: &StickConfig) -> f32 {
+pub fn apply_curve(value: f32, config: &StickConfig) -> f32 {
     let abs = value.abs();
     let curved = match config.curve.curve_type.as_str() {
         "linear" => abs,
